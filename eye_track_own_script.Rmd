@@ -1,0 +1,253 @@
+---
+title: "Eye_tracking"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+pacman::p_load(readr,groupdata2,ggplot2,tidyverse)
+library(data.table)#just for looking at big files
+library(base);library(lme4);library(lmerTest);library(caret);library(Metrics);library(modelr);library(groupdata2);library(grid); library(jpeg)
+
+
+# Both experiments are in the same files
+setwd("C:/Users/annaa/OneDrive/4. Semester/Social and cultural dynamics/eye tracking")
+
+
+log1 = read.csv("logfile_1_2_f.csv")
+log2 = read.csv("logfile_2_1_f.csv")
+log3 = read.csv("logfile_3_2_f.csv")
+log4 = read.csv("logfile_4_1_F.csv")
+log5 = read.csv("logfile_5_2_m.csv")
+log6 = read.csv("logfile_6_1_m.csv")
+
+
+#clean data
+clean_samples = read.csv("SamplesV1.csv")
+clean_fixations = read.csv("FixationsV1.csv")
+clean_saccades = read.csv("SaccadesV1.csv")
+
+
+
+
+```
+
+merge psychopy log files with clean data
+
+```{r}
+
+#bind all the log files - under each other 
+all_log = bind_rows(log1,log2,log3,log4,log5,log6)
+#set name of coloumn
+setnames(all_log, "subject", "ParticipantID")
+
+
+
+#One way to take out information from data-name and creating a new coloumn with the data
+all_log$Directionallity = substr(all_log$video,9,11)
+
+
+#another way of doring as above
+all_log$Ostensiveness[grepl("+o", all_log$video)] = "engaged"
+all_log$Ostensiveness[grepl("-o", all_log$video)] = "not_engaged"
+
+
+
+#log files from pychopy - counts from 0 - we need to add 1 to align it with the other data
+all_log$X = all_log[,1] + 1
+setnames(all_log, "X", "Trial")
+
+
+
+#merge the log files from python into the eyetracker data
+Fixations = merge(clean_fixations, all_log, by = c("Trial", "ParticipantID"), all = TRUE)
+Saccades = merge(clean_saccades, all_log, by = c("Trial", "ParticipantID"), all = TRUE)
+Samples = merge(clean_samples, all_log, by = c("Trial", "ParticipantID"), all = TRUE)
+
+
+#creating search type in the visual search paradigm
+Fixations$SearchType[Fixations$SearchOrder == 1 & Fixations$Trial< 6 ] = "Star" 
+Fixations$SearchType[Fixations$SearchOrder == 1 & Fixations$Trial> 5 ] = "Count" 
+Fixations$SearchType[Fixations$SearchOrder == 2 & Fixations$Trial< 6 ] = "Count" 
+Fixations$SearchType[Fixations$SearchOrder == 2 & Fixations$Trial> 5 ] = "Star"
+
+Samples$SearchType[Samples$SearchOrder == 1 & Samples$Trial< 6 ] = "Star" 
+Samples$SearchType[Samples$SearchOrder == 1 & Samples$Trial> 5 ] = "Count"
+Samples$SearchType[Samples$SearchOrder == 2 & Samples$Trial< 6 ] = "Count" 
+Samples$SearchType[Samples$SearchOrder == 2 & Samples$Trial> 5 ] = "Star"
+
+Saccades$SearchType[Saccades$SearchOrder == 1 & Saccades$Trial< 6 ] = "Star" 
+Saccades$SearchType[Saccades$SearchOrder == 1 & Saccades$Trial> 5 ] = "Count" 
+Saccades$SearchType[Saccades$SearchOrder == 2 & Saccades$Trial< 6 ] = "Count" 
+Saccades$SearchType[Saccades$SearchOrder == 2 & Saccades$Trial> 5 ] = "Star" 
+
+
+#write csv files
+write.csv(Fixations, "Fixations_cleaned")
+write.csv(Samples, "Samples_cleaned")
+write.csv(Saccades, "Saccades_cleaned")
+
+```
+
+Models - for Visual Serch experiment
+
+```{r}
+#data
+fix = read.csv("FixationsV2.csv")
+sac = read.csv("SaccadesV2.csv")
+samples = read.csv("SamplesV2.csv")
+
+
+#models with or without fixed effects of trial and interactions 
+fix_model_simple = glmer(Duration ~ SearchType + Trial + (1+SearchType|ParticipantID), fix, family = gaussian(link = log)) 
+summary(fix_model_simple)
+
+
+fix_model = glmer(Duration ~ SearchType + Trial + (1+SearchType|ParticipantID), fix, family = gaussian(link = log)) #familiy = gussian(link - log): Log transformation - course the data is not normally distributed 
+summary(fix_model)
+
+fix_model_interact = glmer(Duration ~ SearchType * Trial + (1+SearchType|ParticipantID), data = fix, family = gaussian(link = log)) 
+summary(fix_model_interact)
+#duration of fixations across tasks: longer duration of fixtion when searching for the star
+#as fixed effects: search type crucial, trial crucial
+
+
+```
+
+
+Cross validation 
+ - how is the error of our model
+
+```{r}
+#make a data set with only visual search
+fix$uniquesubject = as.numeric(fix$ParticipantID) #Create ID thats numerical
+fix2 = subset(fix, Task == "VisualSearch") #make a subset that only includes visual search
+
+#how many folds do we want??
+numfolds = 3 #we want the loop to go through 3 times
+
+#create a coloumn in data set were data is distributed on 3 folds 
+fix2 = fold(fix2, k = 3, id_col = "uniquesubject") 
+#call the folds coloumn "folds"
+colnames(fix2)[19] = "folds"
+
+
+
+n=1 
+error.train=NULL
+error.test=NULL
+for (i in seq(numfolds))
+  {
+  testD=fix[fix2$folds %in% i,]
+  trainD=fix[!(fix2$folds %in% i),]
+  Modeltrain = glmer(Duration ~ SearchType + (1+SearchType|ParticipantID), trainD, family = gaussian(link = log))
+  #pred = predict(Mtrain,testD, allow.new.levels =TRUE)
+  error.train[n] = Metrics::rmse(predict(Modeltrain), trainD$Duration)
+  error.test[n] = Metrics::rmse(predict(Modeltrain), testD$Duration)
+  
+  #error.train[n]=modelr::rmse(Mtrain,trainD)
+  #error.test[n]=Metrics::rmse(testD$Duration,pred)
+
+  n=n+1 #next time you run the loop - it will be second time and next third, and so on
+  
+}
+
+error.test
+error.train
+
+
+
+```
+Visualization
+The
+
+
+```{r}
+
+jet.colors <- colorRampPalette(c("#00007F", "blue", "#007FFF", "cyan", "#7FFF7F", "yellow", "#FF7F00", "red", "#7F0000"))
+
+#load the image 
+img <- readJPEG('eyetrackingscripts/foraging/ng090ws.jpg')
+#to get the picture to show
+g <- rasterGrob(img, interpolate=TRUE)
+
+#density
+ggplot(subset(fix2, Task=='VisualSearch' & ParticipantID=='6_3_m2' & Trial==6), aes(x = PositionX, y = PositionY)) +
+xlim(0,1920) +
+ylim(0, 1080) +
+annotation_custom(g, xmin=-Inf, xmax=Inf, ymin=-0, ymax=1080) + #xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=Inf) +
+stat_density2d(geom="raster", aes(fill=..density.., alpha=sqrt(sqrt(..density..))), contour=FALSE, n=1000) + 
+scale_alpha(range = c(0.1, 0.6)) + scale_fill_gradientn(colours = jet.colors(10), trans="sqrt")
+
+#aes(fill =..density..,: ggplot can figure out the colours based on the density of the data from the eyetracker
+
+````
+
+
+ANother
+
+```{r}
+
+#search
+#load the image 
+img2 <- readJPEG('eyetrackingscripts/foraging/ng064ws.jpg')
+#to get the picture to show
+g <- rasterGrob(img2, interpolate=TRUE)
+
+#density
+ggplot(subset(fix2, Task=='VisualSearch' & ParticipantID=='4_2_F1' & Trial==4), aes(x = PositionX, y = PositionY)) +
+xlim(0,1920) +
+ylim(0, 1080) +
+annotation_custom(g, xmin=-Inf, xmax=Inf, ymin=-0, ymax=1080) + #xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=Inf) +
+stat_density2d(geom="raster", aes(fill=..density.., alpha=sqrt(sqrt(..density..))), contour=FALSE, n=1000) + 
+scale_alpha(range = c(0.1, 0.6)) + scale_fill_gradientn(colours = jet.colors(10), trans="sqrt")
+
+
+
+#Count
+#load the image 
+img3 <- readJPEG('eyetrackingscripts/foraging/ng120ws.jpg')
+#to get the picture to show
+g <- rasterGrob(img3, interpolate=TRUE)
+
+#density
+ggplot(subset(fix2, Task=='VisualSearch' & ParticipantID=='5_1_m2' & Trial==7), aes(x = PositionX, y = PositionY)) +
+xlim(0,1920) +
+ylim(0, 1080) +
+annotation_custom(g, xmin=-Inf, xmax=Inf, ymin=-0, ymax=1080) + #xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=Inf) +
+stat_density2d(geom="raster", aes(fill=..density.., alpha=sqrt(sqrt(..density..))), contour=FALSE, n=1000) + 
+scale_alpha(range = c(0.1, 0.6)) + scale_fill_gradientn(colours = jet.colors(10), trans="sqrt")
+
+```
+
+Scan paths
+
+
+```{r}
+
+img4 <- readJPEG('eyetrackingscripts/foraging/ng049ws.jpg')
+#to get the picture to show
+g <- rasterGrob(img4, interpolate=TRUE)
+
+#SCANPATHS
+ggplot(subset(fix2, Task == 'VisualSearch' & ParticipantID=='1_1_f1' & Trial==3), aes(x=PositionX, y=1081 - PositionY, label=Fixation)) + xlim(0,1920) +ylim(0, 1080) + annotation_custom(g, xmin=-Inf, xmax=Inf, ymin=-0, ymax=1080) + geom_point(size = 6, alpha = 0.5, colour = "purple") + geom_path(size = 1, alpha = 0.3, colour = "purple") + geom_text(aes(label = Fixation, size = 6)) 
+
+
+
+```
+
+The social engagement task
+
+
+```{r}
+samples_soc = subset(samples, Task == "SocialEngagement") #make a subset that only includes
+
+
+ggplot(samples_soc, aes(TrialTime, PupilSize, colour = Ostension) 
+       + geom_smooth())
+
+
+
+
+```
