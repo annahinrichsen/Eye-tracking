@@ -8,7 +8,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 pacman::p_load(readr,groupdata2,ggplot2,tidyverse)
 library(data.table)#just for looking at big files
-library(base);library(lme4);library(lmerTest);library(caret);library(Metrics);library(modelr);library(groupdata2);library(grid); library(jpeg)
+library(base);library(lme4);library(lmerTest);library(caret);library(Metrics);library(modelr);library(groupdata2);library(grid); library(jpeg);library(tibble);library(MuMIn);library(gridExtra)
 
 
 # Both experiments are in the same files
@@ -33,7 +33,9 @@ clean_saccades = read.csv("SaccadesV1.csv")
 
 ```
 
-merge psychopy log files with clean data
+
+
+##Some preprocessing
 
 ```{r}
 
@@ -90,7 +92,9 @@ write.csv(Saccades, "Saccades_cleaned")
 
 ```
 
-Models - for Visual Serch experiment
+
+##Visual seach experiment
+
 
 ```{r}
 #data
@@ -99,25 +103,29 @@ sac = read.csv("SaccadesV2.csv")
 samples = read.csv("SamplesV2.csv")
 
 
-#models with or without fixed effects of trial and interactions 
-fix_model_simple = glmer(Duration ~ SearchType + Trial + (1+SearchType|ParticipantID), fix, family = gaussian(link = log)) 
+#looking at some models
+
+#duration of fixations
+fix_model_simple = glmer(Duration ~ SearchType + (1+SearchType|ParticipantID), fix, family = gaussian(link = log)) 
 summary(fix_model_simple)
 
 
 fix_model = glmer(Duration ~ SearchType + Trial + (1+SearchType|ParticipantID), fix, family = gaussian(link = log)) #familiy = gussian(link - log): Log transformation - course the data is not normally distributed 
 summary(fix_model)
 
-fix_model_interact = glmer(Duration ~ SearchType * Trial + (1+SearchType|ParticipantID), data = fix, family = gaussian(link = log)) 
-summary(fix_model_interact)
-#duration of fixations across tasks: longer duration of fixtion when searching for the star
-#as fixed effects: search type crucial, trial crucial
 
+#saccades of amplitudes
+sac_model_simple = glmer(Amplitude ~ SearchType + (1+SearchType|ParticipantID), trainD, family = gaussian(link = log), control = glmerControl(optimizer = "nloptwrap", calc.derivs = FALSE))
+summary(sac_model_simple)
+
+
+sac_model = glmer(Amplitude ~ SearchType + Trial + (1+SearchType|ParticipantID), trainD, family = gaussian(link = log), control = glmerControl(optimizer = "nloptwrap", calc.derivs = FALSE))
+summary(sac_model)
 
 ```
 
-
-Cross validation 
- - how is the error of our model
+### Model selection via Cross validation 
+ - how is the error of our models
 
 ```{r}
 #make a data set with only visual search
@@ -125,45 +133,189 @@ fix$uniquesubject = as.numeric(fix$ParticipantID) #Create ID thats numerical
 fix2 = subset(fix, Task == "VisualSearch") #make a subset that only includes visual search
 
 #how many folds do we want??
-numfolds = 3 #we want the loop to go through 3 times
+numfolds = 5 #we want the loop to go through 5 times
 
 #create a coloumn in data set were data is distributed on 3 folds 
-fix2 = fold(fix2, k = 3, id_col = "uniquesubject") 
+fix2 = fold(fix2, k = 5, id_col = "uniquesubject") 
 #call the folds coloumn "folds"
 colnames(fix2)[19] = "folds"
-
 
 
 n=1 
 error.train=NULL
 error.test=NULL
+
+
+#Cross val for simple model with only search type
 for (i in seq(numfolds))
   {
   testD=fix[fix2$folds %in% i,]
   trainD=fix[!(fix2$folds %in% i),]
   Modeltrain = glmer(Duration ~ SearchType + (1+SearchType|ParticipantID), trainD, family = gaussian(link = log))
-  #pred = predict(Mtrain,testD, allow.new.levels =TRUE)
   error.train[n] = Metrics::rmse(predict(Modeltrain), trainD$Duration)
   error.test[n] = Metrics::rmse(predict(Modeltrain), testD$Duration)
   
-  #error.train[n]=modelr::rmse(Mtrain,trainD)
-  #error.test[n]=Metrics::rmse(testD$Duration,pred)
 
+  
+  n=n+1 #next time you run the loop - it will be second time and next third, and so on
+  
+  
+}
+
+
+
+#Cross val for model with Trial as fixed effect
+for (i in seq(numfolds))
+  {
+  testD=fix[fix2$folds %in% i,]
+  trainD=fix[!(fix2$folds %in% i),]
+  Modeltrain = glmer(Duration ~ SearchType + Trial + (1+SearchType|ParticipantID), trainD, family = gaussian(link = log), control = glmerControl(optimizer = "nloptwrap", calc.derivs = FALSE))
+  error.train[n] = Metrics::rmse(predict(Modeltrain), trainD$Duration)
+  error.test[n] = Metrics::rmse(predict(Modeltrain), testD$Duration)
+  
+  
+  n=n+1 #next time you run the loop - it will be second time and next third, and so on
+  
+  
+}
+
+```
+
+For models with saccades amplitude 
+
+```{r}
+#make a data set with only visual search
+sac$uniquesubject = as.numeric(sac$ParticipantID) #Create ID thats numerical
+sac = subset(sac, Task == "VisualSearch") #make a subset that only includes visual search
+
+#how many folds do we want??
+numfolds = 5 #we want the loop to go through 5 times
+
+#create a coloumn in data set were data is distributed on 3 folds 
+sac = fold(sac, k = 5, id_col = "uniquesubject") 
+#call the folds coloumn "folds"
+colnames(sac)[25] = "folds"
+
+
+
+
+#cross val for model with only search type as predictor 
+
+for (i in seq(numfolds))
+  {
+  testD=sac[sac$folds %in% i,]
+  trainD=sac[!(sac$folds %in% i),]
+  Modeltrain = glmer(Amplitude ~ SearchType + (1+SearchType|ParticipantID), trainD, family = gaussian(link = log), control = glmerControl(optimizer = "nloptwrap", calc.derivs = FALSE))
+  
+  error.train[n] = Metrics::rmse(predict(Modeltrain), trainD$Duration)
+  error.test[n] = Metrics::rmse(predict(Modeltrain), testD$Duration)
+  
   n=n+1 #next time you run the loop - it will be second time and next third, and so on
   
 }
 
-error.test
-error.train
 
+
+
+
+#amplitude of saccades including trial as fixed effect
+
+for (i in seq(numfolds))
+  {
+  testD=sac[sac$folds %in% i,]
+  trainD=sac[!(sac$folds %in% i),]
+  Modeltrain = glmer(Amplitude ~ SearchType + Trial + (1+SearchType|ParticipantID), trainD, family = gaussian(link = log), control = glmerControl(optimizer = "nloptwrap", calc.derivs = FALSE))
+  error.train[n] = Metrics::rmse(predict(Modeltrain), trainD$Duration)
+  error.test[n] = Metrics::rmse(predict(Modeltrain), testD$Duration)
+
+  
+  n=n+1 #next time you run the loop - it will be second time and next third, and so on
+  
+}
+
+
+#results in a data frame (not so alegant) everytime a cross val has been run, a new df has been created and attached to former
+
+#fix_du simple
+df = data.frame(mean(error.test), mean(error.train))
+df$Model = "SearchType"
+
+#fix_du with trial
+df2 = data.frame(mean(error.test), mean(error.train))
+df2$Model = "SearchType+Trial"
+df = rbind(df,df2)
+
+#sac_amp simple
+df3 = data.frame(mean(error.test), mean(error.train))
+df3$Model = "SearchType_sacamp"
+df = rbind(df,df3)
+
+#sac_amp with trial
+df4 = data.frame(mean(error.test), mean(error.train))
+df4$Model = "SearchType+Trial_sacamp"
+df = rbind(df,df4)
+
+#change coloumn names
+setnames(df, "RMSE_test", "mean_RMSE_test")
+setnames(df, "RMSE_train", "mean_RMSE_train")
+
+#save data as csv
+write.csv(df, "Model_selection")
+
+#make the data.fame into a picture to include in report
+png("test.png", height = 50*nrow(df), width = 200*ncol(Model_results))
+p<-tableGrob(df)
+grid.arrange(p)
+dev.off()
 
 
 ```
+
+Selected model and resuls
+
+```{r}
+
+getmodel_information = function(mdl, n){
+  temp_df = summary(mdl)$coefficients
+  temp_df = as.data.frame(temp_df)
+  temp_df = tibble::rownames_to_column(temp_df, "coef")
+  temp_df$n = n
+  return(temp_df)
+}
+
+#model chosen
+chosen_model_sacamp=  glmer(Amplitude ~ SearchType + Trial + (1+SearchType|ParticipantID), sac, family = gaussian(link = log), control = glmerControl(optimizer = "nloptwrap", calc.derivs = FALSE))
+
+
+#model results 
+Model_results = getmodel_information(chosen_model_sacamp, n =NULL)
+
+
+
+
+write.csv(Model_results, "Model_results")
+
+#make the data.fame into a picture to include in report
+png("test.png", height = 50*nrow(df), width = 200*ncol(Model_results))
+p<-tableGrob(Model_results)
+grid.arrange(p)
+
+
+```
+
+
+
+
+
+
 Visualization
-The
 
 
 ```{r}
+
+
+ggplot(sac,aes(SearchType,Amplitude)) + geom_boxplot()
+
 
 jet.colors <- colorRampPalette(c("#00007F", "blue", "#007FFF", "cyan", "#7FFF7F", "yellow", "#FF7F00", "red", "#7F0000"))
 
@@ -182,10 +334,9 @@ scale_alpha(range = c(0.1, 0.6)) + scale_fill_gradientn(colours = jet.colors(10)
 
 #aes(fill =..density..,: ggplot can figure out the colours based on the density of the data from the eyetracker
 
-````
+```
 
-
-ANother
+Another
 
 ```{r}
 
@@ -237,17 +388,35 @@ ggplot(subset(fix2, Task == 'VisualSearch' & ParticipantID=='1_1_f1' & Trial==3)
 
 ```
 
-The social engagement task
+###The social engagement task
 
-
+Visualize
 ```{r}
 samples_soc = subset(samples, Task == "SocialEngagement") #make a subset that only includes
 
 
-ggplot(samples_soc, aes(TrialTime, PupilSize, colour = Ostension) 
-       + geom_smooth())
+ggplot(samples_soc, aes(TrialTime, PupilSize))
 
 
 
 
 ```
+Models 
+
+
+```{r}
+
+
+
+```
+Model selection
+cross validation
+
+
+```{r}
+
+
+
+
+```
+
